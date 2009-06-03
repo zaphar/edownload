@@ -22,7 +22,7 @@ accumulate_chunk(Agent) ->
     case check_agent(Agent) of
         time_out ->
             accumulate_chunk(Agent);
-        {ok, {Body, Num}} ->
+        {ok, {Body, _}} ->
             Body;
         {wait, _} ->
             accumulate_chunk(Agent);
