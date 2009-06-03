@@ -1,6 +1,7 @@
 -module(edownload_util).
 -compile(export_all).
 
+-include("uri.hrl").
 
 accept_range(Headers) ->
     case get_header_value("Accept-Ranges", Headers) of
@@ -73,3 +74,12 @@ set_headers_for_rest(Type, Offset, Tag, Date) ->
         , {"If-Range", Tag}
     ]
 .
+
+filename_from_uri(Uri) when is_list(Uri) ->
+    filename_from_uri(uri:from_string(Uri));
+filename_from_uri(Uri) when is_record(Uri, uri) ->
+    Path = Uri#uri.path
+    , {match, Start, Len} = regexp:match(Path, "([^/]+)$")
+    , string:substr(Path, Start, Len)
+.
+
