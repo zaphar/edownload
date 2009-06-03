@@ -83,3 +83,9 @@ filename_from_uri(Uri) when is_record(Uri, uri) ->
     , string:substr(Path, Start, Len)
 .
 
+%get_auth_for_domain(Uri) when is_list(Uri) ->
+%    get_auth_for_domain(uri:from_string(Uri));
+%get_auth_for_domain(Uri) when is_record(Uri, uri) ->
+%    Domain = Uri#uri.domain
+%.
+

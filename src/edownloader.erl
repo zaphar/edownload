@@ -11,6 +11,21 @@ get_head(Url) ->
     , {ok, Headers}
 .
 
+download_chunks(Url, Count) ->
+     {ok, Headers} = get_head(Url)
+     , {ok, Size} = edownload_util:get_size_from_header(Headers)
+     , {ok, Tag} = edownload_util:get_etag_from_header(Headers)
+     , {ok, Modified} = edownload_util:get_last_modified_from_header(Headers)
+     , case edownload_util:accept_range(Headers) of
+        false ->
+            {fail, unsupported};
+        _ ->
+            RangeList = edownload_util:get_range_list(Size, Count)
+            , Agents = download_agent({Url, Tag, Modified}, RangeList, 1)
+            , accumulate_chunks(Agents)
+     end
+.
+
 accumulate_chunks([]) ->
     [];
 accumulate_chunks(Agents) when is_list(Agents) ->
@@ -29,21 +44,6 @@ accumulate_chunk(Agent) ->
         Msg ->
             Msg
     end
-.
-
-download_chunks(Url, Count) ->
-     {ok, Headers} = get_head(Url)
-     , {ok, Size} = edownload_util:get_size_from_header(Headers)
-     , {ok, Tag} = edownload_util:get_etag_from_header(Headers)
-     , {ok, Modified} = edownload_util:get_last_modified_from_header(Headers)
-     , case edownload_util:accept_range(Headers) of
-        false ->
-            {fail, unsupported};
-        _ ->
-            RangeList = edownload_util:get_range_list(Size, Count)
-            , Agents = download_agent({Url, Tag, Modified}, RangeList, 1)
-            , accumulate_chunks(Agents)
-     end
 .
 
 download_agent(_, [], _) ->
