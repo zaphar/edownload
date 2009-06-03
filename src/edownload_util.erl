@@ -2,11 +2,6 @@
 -compile(export_all).
 
 
-get_head(Url) ->
-    {ok, "200", Headers, _} = ibrowse:send_req(Url, [], head)
-    , {ok, Headers}
-.
-
 accept_range(Headers) ->
     case get_header_value("Accept-Ranges", Headers) of
         {ok, Type} ->
