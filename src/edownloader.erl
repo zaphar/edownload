@@ -4,8 +4,7 @@
 -export([download_chunk/4, download_chunks/2]).
 -export([check_agent/1]).
 
--define(DSTATE(Stat, Part, Num, Worker, Range), {Stat, Part, Num, Worker, Range}).
--record(ed_agent_state, {stat, part, num, worker, range}).
+-record(ed_agent_state, {stat, part, num, worker, range, percent=0}).
 
 start() -> ibrowse:start().
 
@@ -40,7 +39,7 @@ accumulate_chunk(Agent) ->
     case check_agent(Agent) of
         time_out ->
             accumulate_chunk(Agent);
-        {ok, {Body, _}} ->
+        {ok, {_, Body}} ->
             Body;
         {wait, _} ->
             accumulate_chunk(Agent);
@@ -66,6 +65,7 @@ download_agent(State) when is_record(State, ed_agent_state) ->
     , Part = State#ed_agent_state.part
     , Stat = State#ed_agent_state.stat
     , Worker = State#ed_agent_state.worker
+    , Percent = State#ed_agent_state.percent
     , receive
         {start, {{Url, Tag, Modified}, R}} ->
             case download_chunk(Url, R, Tag, Modified) of
@@ -76,7 +76,7 @@ download_agent(State) when is_record(State, ed_agent_state) ->
                     download_agent(State#ed_agent_state{worker=Id})
             end;
         {finished, Pid} ->
-            Pid ! {Stat, Num, Part};
+            Pid ! {Stat, Num, {Part, Percent }};
         {stop, Pid} ->
             Pid ! {stopping, Num, Part}
             , exit(normal);
@@ -84,8 +84,8 @@ download_agent(State) when is_record(State, ed_agent_state) ->
             download_agent(State#ed_agent_state{stat=wait});
         {ibrowse_async_response, Worker, Body} ->
             % TODO(jwall): log the percent complete for this agents work
-            Part = State#ed_agent_state.part
-            , download_agent(State#ed_agent_state{stat=in_progress, part=Part ++ Body});
+            NewState = calc_percent(State#ed_agent_state{stat=in_progress, part=Part ++ Body})
+            , download_agent(NewState);
         {ibrowse_async_response_end, Worker} ->
             download_agent(State#ed_agent_state{stat=ok, worker=Worker});
         {error, Type} ->
@@ -97,14 +97,21 @@ download_agent(State) when is_record(State, ed_agent_state) ->
     , download_agent(State)
 .
 
+calc_percent(State) ->
+    Total = length(State#ed_agent_state.part)
+    , {Start, End} = State#ed_agent_state.range
+    , P = trunc((Total / (End - Start)) * 100)
+    , State#ed_agent_state{percent=P}
+.
+
 check_agent(Pid) ->
     Pid ! {finished, self()}
     , receive
-        {ok, Body, Num} ->
+        {ok, Num, {Body, _}} ->
             {ok, {Num, Body}};
-        {fail, _, Num} ->
-            {fail, Num};
-        {Stat, _, Num} when Stat == wait orelse Stat == in_progress ->
+        {fail, _, {Body, _}} ->
+            {fail, Body};
+        {Stat, Num, {_, _Percent}} when Stat == wait orelse Stat == in_progress ->
             {wait, Num}
     after
         5*1000 ->
