@@ -52,27 +52,38 @@ download_agent(UrlInfo, RangeList, N) when is_list(RangeList) ->
     [H | T] = RangeList
     , [download_agent(UrlInfo, H, N) | download_agent(UrlInfo, T, N+1)];
 download_agent(UrlInfo, Range, Num) when is_tuple(Range) ->
-    Pid = spawn(fun() -> download_agent({wait, [], 0}) end)
+    Pid = spawn(fun() -> download_agent({wait, [], 0, undefined}) end)
     , Pid ! {start, {UrlInfo, Range, Num}}
     , Pid
 .
 
-download_agent({Stat, Part, Num}) ->
+download_agent({Stat, Part, Num, Worker}) ->
     receive
         {start, {{Url, Tag, Modified}, R, Count}} ->
             case download_chunk(Url, R, Tag, Modified) of
                 {ok, "206", _Headers, Body} ->
-                    download_agent({ok, Body, Count});
+                    download_agent({ok, Body, Count, Worker});
                 {_, _, _Headers, Body} ->
-                    download_agent({fail, Body, Count})
+                    download_agent({fail, Body, Num, Worker});
+                {ibrowse_req_id, Id} ->
+                    download_agent({wait, Part, Num, Id})
             end;
         {finished, Pid} ->
             Pid ! {Stat, Num, Part};
         {stop, Pid} ->
             Pid ! {stopping, Num, Part}
-            , exit(normal)
+            , exit(normal);
+        {ibrowse_async_headers, Worker, "206", _Headers} ->
+            download_agent({wait, Part, Num, Worker});
+        {ibrowse_async_response, Worker, Body} ->
+            % TODO(jwall): log the percent complete for this agents work
+            download_agent({in_progress, Part ++ Body, Num, Worker});
+        {ibrowse_async_response_end, Worker} ->
+            download_agent({ok, Part, Num, Worker});
+        Msg ->
+            io:format("Recieved Msg: ~p~n", [Msg])
     end
-    , download_agent({Stat, Part, Num})
+    , download_agent({Stat, Part, Num, Worker})
 .
 
 check_agent(Pid) ->
@@ -82,7 +93,7 @@ check_agent(Pid) ->
             {ok, {Num, Body}};
         {fail, _, Num} ->
             {fail, Num};
-        {wait, _, Num} ->
+        {Stat, _, Num} when Stat == wait orelse Stat == in_progress ->
             {wait, Num}
     after
         5*1000 ->
@@ -91,8 +102,11 @@ check_agent(Pid) ->
 .
 
 download_chunk(Url, {Start, End}, Tag, Modified) ->
-    ibrowse:send_req(Url
-        , edownload_util:set_headers_for_chunk("bytes", Start, End, Tag, Modified)
-        , get)
+    Headers = edownload_util:set_headers_for_chunk("bytes", Start, End, Tag, Modified)
+    , Options = [{stream_to, self()}]
+    %, Options = []
+    , Body = []
+    , io:format("Headers: ~p~n", [Headers])
+    , ibrowse:send_req(Url, Headers, get, Body, Options)
 .
 
