@@ -4,6 +4,9 @@
 -export([download_chunk/4, download_chunks/2]).
 -export([check_agent/1]).
 
+-define(DSTATE(Stat, Part, Num, Worker, Range), {Stat, Part, Num, Worker, Range}).
+-record(ed_agent_state, {stat, part, num, worker, range}).
+
 start() -> ibrowse:start().
 
 get_head(Url) ->
@@ -52,21 +55,25 @@ download_agent(UrlInfo, RangeList, N) when is_list(RangeList) ->
     [H | T] = RangeList
     , [download_agent(UrlInfo, H, N) | download_agent(UrlInfo, T, N+1)];
 download_agent(UrlInfo, Range, Num) when is_tuple(Range) ->
-    Pid = spawn(fun() -> download_agent({wait, [], 0, undefined}) end)
-    , Pid ! {start, {UrlInfo, Range, Num}}
+    Pid = spawn(fun() -> download_agent(#ed_agent_state{stat=wait, part=[], num=Num, range=Range}) end)
+    , Pid ! {start, {UrlInfo, Range}}
     , Pid
 .
 
-download_agent({Stat, Part, Num, Worker}) ->
-    receive
-        {start, {{Url, Tag, Modified}, R, Count}} ->
+
+download_agent(State) when is_record(State, ed_agent_state) ->
+    Num = State#ed_agent_state.num
+    , Part = State#ed_agent_state.part
+    , Stat = State#ed_agent_state.stat
+    , Worker = State#ed_agent_state.worker
+    , receive
+        {start, {{Url, Tag, Modified}, R}} ->
             case download_chunk(Url, R, Tag, Modified) of
-                {ok, "206", _Headers, Body} ->
-                    download_agent({ok, Body, Count, Worker});
-                {_, _, _Headers, Body} ->
-                    download_agent({fail, Body, Num, Worker});
+                {error, Type} ->
+                    io:format("Error: ~p~n", [Type])
+                    ,  download_agent(State#ed_agent_state{stat=fail});
                 {ibrowse_req_id, Id} ->
-                    download_agent({wait, Part, Num, Id})
+                    download_agent(State#ed_agent_state{worker=Id})
             end;
         {finished, Pid} ->
             Pid ! {Stat, Num, Part};
@@ -74,19 +81,20 @@ download_agent({Stat, Part, Num, Worker}) ->
             Pid ! {stopping, Num, Part}
             , exit(normal);
         {ibrowse_async_headers, Worker, "206", _Headers} ->
-            download_agent({wait, Part, Num, Worker});
+            download_agent(State#ed_agent_state{stat=wait});
         {ibrowse_async_response, Worker, Body} ->
             % TODO(jwall): log the percent complete for this agents work
-            download_agent({in_progress, Part ++ Body, Num, Worker});
+            Part = State#ed_agent_state.part
+            , download_agent(State#ed_agent_state{stat=in_progress, part=Part ++ Body});
         {ibrowse_async_response_end, Worker} ->
-            download_agent({ok, Part, Num, Worker});
+            download_agent(State#ed_agent_state{stat=ok, worker=Worker});
         {error, Type} ->
             io:format("Error: ~p~n", [Type])
-            ,  download_agent({fail, Part, Num, Worker});
+            ,  download_agent(State#ed_agent_state{stat=fail});
         Msg ->
             io:format("Recieved Msg: ~p~n", [Msg])
     end
-    , download_agent({Stat, Part, Num, Worker})
+    , download_agent(State)
 .
 
 check_agent(Pid) ->
