@@ -80,6 +80,9 @@ download_agent({Stat, Part, Num, Worker}) ->
             download_agent({in_progress, Part ++ Body, Num, Worker});
         {ibrowse_async_response_end, Worker} ->
             download_agent({ok, Part, Num, Worker});
+        {error, Type} ->
+            io:format("Error: ~p~n", [Type])
+            ,  download_agent({fail, Part, Num, Worker});
         Msg ->
             io:format("Recieved Msg: ~p~n", [Msg])
     end
@@ -107,6 +110,7 @@ download_chunk(Url, {Start, End}, Tag, Modified) ->
     %, Options = []
     , Body = []
     , io:format("Headers: ~p~n", [Headers])
+    %% TODO(jwall): configurable authentication
     , ibrowse:send_req(Url, Headers, get, Body, Options)
 .
 
