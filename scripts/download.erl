@@ -16,7 +16,6 @@ run([Url, Count]) ->
 run([Url, Count, Output]) ->
     io:format("Downloading ~s in ~p threads to ~s ~n", [Url, Count, Output])
     , edownloader:start()
-    , Content = edownloader:download_chunks(Url, list_to_integer(Count))
-    , Result = file:write_file(Output, list_to_binary(Content))
+    , Result = edownloader:download_chunks_to(Url, list_to_integer(Count), Output)
     , io:format("Saved: ~p~n", [Result])
 .

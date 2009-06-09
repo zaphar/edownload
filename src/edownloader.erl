@@ -3,16 +3,21 @@
 -include_lib("kernel/include/file.hrl").
 
 -export([start/0]).
--export([download_chunk/4, download_chunks/2, download_chunks_to/3]).
+-export([download_chunk/4, download_chunks/2, download_chunks_to/3, download_chunks_to/2]).
 -export([check_agent/1]).
 
--record(ed_agent_state, {stat, total=0, num=0, worker, range, percent=0, buffer, tries=0, url, tag, modified, marker=0}).
+-record(ed_agent_state, {stat, total=0, num=0, worker, range, percent=0, buffer, tries=1, url, tag, modified, marker=0}).
 
 start() -> ibrowse:start().
 
 get_head(Url) ->
     {ok, "200", Headers, _} = ibrowse:send_req(Url, [], head)
     , {ok, Headers}
+.
+
+download_chunks_to(Url, Count) ->
+    File = edownload_util:filename_from_uri(Url)
+    , download_chunks_to(Url, Count, File)
 .
 
 download_chunks_to(Url, Count, File) ->
@@ -22,7 +27,9 @@ download_chunks_to(Url, Count, File) ->
 .
 
 cat_file_to(Dest, Source) ->
-    {ok, FileName} = file:pid2name(Source)
+    , io:format("Dest  : ~p~n", [Dest])
+    , io:format("Source: ~p~n", [Source])
+    , {ok, FileName} = file:pid2name(Source)
     , io:format("file name: ~p", [FileName])
     , file:close(Source)
     , {ok, Data} =  file:read_file(FileName)
@@ -61,8 +68,8 @@ accumulate_buffer(Agent) ->
             Buffer;
         {wait, _} ->
             accumulate_buffer(Agent);
-        Msg ->
-            Msg
+        {fail, Buffer} ->
+            Buffer
     end
 .
 
@@ -86,11 +93,12 @@ download_agent(State) when is_record(State, ed_agent_state) ->
     , Worker = State#ed_agent_state.worker
     , Percent = State#ed_agent_state.percent
     , Buffer = State#ed_agent_state.buffer
+    , {Start, End} = State#ed_agent_state.range
     , receive
         {start, {{Url, Tag, Modified}, R}} ->
             FileName = integer_to_list(erlang:phash2(make_ref()))
             , {ok, File} = file:open(FileName, [write, read])
-            , NewState = State#ed_agent_state{url=Url, tag=Tag, modified=Modified, range=R, buffer=File}
+            , NewState = State#ed_agent_state{url=Url, tag=Tag, modified=Modified, range=R, buffer=File, marker=Start}
             , start_chunk_download(NewState);
         {finished, Pid} ->
             Pid ! {Stat, Num, {Buffer, Percent }};
@@ -99,21 +107,31 @@ download_agent(State) when is_record(State, ed_agent_state) ->
             , exit(normal);
         {ibrowse_async_headers, Worker, "206", _Headers} ->
             download_agent(State#ed_agent_state{stat=wait});
-        {ibrowse_async_response, Worker, {error, req_timedout}} ->
+        {ibrowse_async_response, Worker, {error, Type}} ->
             Tries = State#ed_agent_state.tries
-            , io:format("Warning: timedout. Tries: ~p~n", [Tries])
-            , start_chunk_download(State#ed_agent_state{tries=Tries + 1});
+            , io:format("Warning: ~p. Tries: ~p~n", [Type, Tries])
+            , case (State#ed_agent_state.marker > End) of
+                true ->
+                    erlang:error({attempt_to_exceed_download_size, {marker, State#ed_agent_state.marker}});
+                false ->
+                    start_chunk_download(State#ed_agent_state{tries=Tries + 1})
+            end;
         {ibrowse_async_response, Worker, Body} ->
             file:write(Buffer, Body)
             , L = length(Body)
             , NewState = calc_percent(State#ed_agent_state{stat=in_progress, total=Total+L,
                 marker=Marker+L})
-            , io:format("piece #~p is ~p% downloaded~n", [Num, NewState#ed_agent_state.percent])
+            %, io:format("~nPiece #~p      just downloaded: ~p bytes~n", [Num, L]) 
+            %, io:format("Piece #~p           marker was: ~p bytes~n", [Num, Marker]) 
+            %, io:format("Piece #~p            marker is: ~p bytes~n", [Num, NewState#ed_agent_state.marker]) 
+            %, io:format("Piece #~p     total downloaded: ~p bytes~n", [Num, NewState#ed_agent_state.total]) 
+            %, io:format("Piece #~p total to download is: ~p~n", [Num, End ja[- Start])
+            %, io:format("Piece #~p is ~p% downloaded~n~n", [Num, NewState#ed_agent_state.percent])
             , download_agent(NewState);
         {ibrowse_async_response_end, Worker} ->
             download_agent(State#ed_agent_state{stat=ok, worker=Worker});
         {error, Type} ->
-            io:format("Error: ~p~n", [Type])
+            io:format("Error during download: ~p~n", [Type])
             ,  download_agent(State#ed_agent_state{stat=fail});
         Msg ->
             io:format("Recieved Msg: ~p~n", [Msg])
@@ -124,22 +142,33 @@ download_agent(State) when is_record(State, ed_agent_state) ->
 start_chunk_download(State) ->
     Url = State#ed_agent_state.url
     , {Start, End} = State#ed_agent_state.range
-    , R = case State#ed_agent_state.marker of
+    , Tag = State#ed_agent_state.tag
+    , Modified = State#ed_agent_state.modified
+    , Total = State#ed_agent_state.total
+    , Marker = State#ed_agent_state.marker
+    , R = case Marker of
         0 ->
             {Start, End};
         Start ->
             {Start, End};
-        NewStart ->
+        NewStart when (NewStart + 1) < End ->
             {NewStart+1, End}
     end
-    , Tag = State#ed_agent_state.tag
-    , Modified = State#ed_agent_state.modified
-    , case download_chunk(Url, R, Tag, Modified) of
-        {error, Type} ->
-            io:format("Error: ~p~n", [Type])
-            ,  download_agent(State#ed_agent_state{stat=fail});
-        {ibrowse_req_id, Id} ->
-            download_agent(State#ed_agent_state{worker=Id, marker=Start})
+    , case State#ed_agent_state.total > (End - Start) of
+        true ->
+            io:format("Warning already at end of chunk: ~p~n", [State#ed_agent_state.num])
+            , io:format("Warning ~p Total so far        : ~p~n", [State#ed_agent_state.num, Total])
+            , io:format("Warning ~p Marker so far       : ~p~n", [State#ed_agent_state.num, Marker])
+            , download_agent(State);
+        _ ->
+            case download_chunk(Url, R, Tag, Modified) of
+                {error, Type} ->
+                    io:format("Error starting download: ~p~n", [Type])
+                    ,  download_agent(State#ed_agent_state{stat=fail});
+                {ibrowse_req_id, Id} ->
+                    io:format("Ranges:  needed [~p] requested [~p]~n", [{Start, End}, R])
+                    , download_agent(State#ed_agent_state{worker=Id})
+            end
     end
 .
 
